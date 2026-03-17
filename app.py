@@ -1,3 +1,4 @@
+import sys
 import asyncio
 import logging
 
@@ -27,6 +28,7 @@ async def main() -> None:
         model=settings.ollama_model,
         timeout_seconds=settings.ollama_timeout_seconds,
     )
+    await ollama_client.start()
 
     register_handlers(dp, bot, db, ollama_client, settings)
 
@@ -38,4 +40,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.platform.startswith("win"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())

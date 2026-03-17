@@ -10,13 +10,20 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-        self.session = aiohttp.ClientSession(timeout=self.timeout)
+        self.session: aiohttp.ClientSession | None = None
+
+    async def start(self) -> None:
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession(timeout=self.timeout)
 
     async def close(self) -> None:
-        if not self.session.closed:
+        if self.session is not None and not self.session.closed:
             await self.session.close()
 
     async def _generate(self, prompt: str, system: str | None = None) -> str | None:
+        if self.session is None or self.session.closed:
+            await self.start()
+
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -26,14 +33,19 @@ class OllamaClient:
             payload["system"] = system
 
         try:
-            async with self.session.post(f"{self.base_url}/api/generate", json=payload) as resp:
+            async with self.session.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+            ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.error("Ollama request failed: status=%s body=%s", resp.status, body)
                     return None
+
                 data = await resp.json()
                 return (data.get("response") or "").strip()
-        except Exception as exc:  # noqa: BLE001
+
+        except Exception as exc:
             logger.exception("Ollama request exception: %s", exc)
             return None
 
