@@ -110,12 +110,12 @@ Classification rules:
 
 Output STRICT JSON only. No markdown. No extra text.
 Required schema:
-{
+{{
   "classification": "CLEAN" | "SUSPICIOUS" | "SPAM",
   "confidence": 0.0,
   "reason": "short explanation",
   "should_warn": false
-}
+}}
 
 Rules for output:
 - should_warn may be true for SPAM and optionally for strong SUSPICIOUS cases
