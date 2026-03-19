@@ -49,10 +49,28 @@ class Database:
             )
             self._ensure_new_user_messages_table(conn)
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message_classification (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    chat_id INTEGER,
+                    message_text TEXT,
+                    classification TEXT,
+                    confidence REAL,
+                    reason TEXT,
+                    should_warn INTEGER,
+                    created_at INTEGER
+                )
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_group_id_id ON messages(group_id, id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_new_user_messages_chat_user ON new_user_messages(chat_id, user_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_classification_chat_user ON message_classification(chat_id, user_id)"
             )
             conn.commit()
 
@@ -244,6 +262,61 @@ class Database:
                 conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to save tracked new-user message: %s", exc)
+
+    async def save_classification(
+        self,
+        user_id: int,
+        chat_id: int,
+        text: str,
+        classification: str,
+        confidence: float,
+        reason: str,
+        should_warn: bool,
+    ) -> None:
+        await asyncio.to_thread(
+            self._save_classification_sync,
+            user_id,
+            chat_id,
+            text,
+            classification,
+            confidence,
+            reason,
+            int(should_warn),
+            int(time.time()),
+        )
+
+    def _save_classification_sync(
+        self,
+        user_id: int,
+        chat_id: int,
+        text: str,
+        classification: str,
+        confidence: float,
+        reason: str,
+        should_warn: int,
+        created_at: int,
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO message_classification (
+                        user_id,
+                        chat_id,
+                        message_text,
+                        classification,
+                        confidence,
+                        reason,
+                        should_warn,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, chat_id, text, classification, confidence, reason, should_warn, created_at),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to save message classification: %s", exc)
 
     async def get_recent_messages(self, group_id: int, limit: int) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._get_recent_messages_sync, group_id, limit)

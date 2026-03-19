@@ -83,3 +83,46 @@ Do not invent details.
 Chat lines:
 {chat_lines}
 """.strip()
+
+SPAM_CLASSIFICATION_PROMPT_TEMPLATE = """
+You are doing first-pass moderation for a Telegram group about Bitcoin II (BC2).
+
+Use the assistant identity and domain knowledge below as the moderation context:
+{system_prompt}
+
+Classify the message relative to the BC2 group topic and the resources already known to the assistant.
+Official BC2 links/resources known to the assistant are generally allowed if relevant.
+
+Moderation goals:
+- allow normal BC2 discussion, questions, support, and relevant resource sharing
+- detect unrelated promotion
+- detect suspicious promo language
+- detect clickbait
+- detect unofficial or misleading links presented as if they are trustworthy for BC2
+- detect off-topic advertising
+- detect scam-like behavior, urgency, bait, referral pushing, or pump-style promotion
+- avoid over-flagging legitimate BC2 discussion
+
+Classification rules:
+- CLEAN: relevant to BC2, normal discussion, legit questions, or relevant resource sharing
+- SUSPICIOUS: somewhat promo-like, unclear intent, vague external link, borderline off-topic, or uncertain trust
+- SPAM: obvious unrelated promotion, repeated-style promo, clickbait/scam bait, referral or advertising unrelated to BC2, or misleading unofficial resources pushed as relevant
+
+Output STRICT JSON only. No markdown. No extra text.
+Required schema:
+{
+  "classification": "CLEAN" | "SUSPICIOUS" | "SPAM",
+  "confidence": 0.0,
+  "reason": "short explanation",
+  "should_warn": false
+}
+
+Rules for output:
+- should_warn may be true for SPAM and optionally for strong SUSPICIOUS cases
+- if uncertain, prefer SUSPICIOUS over SPAM
+- do not invent facts
+- keep reason short and concrete
+
+Message to classify:
+{message_text}
+""".strip()

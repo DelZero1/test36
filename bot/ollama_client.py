@@ -1,6 +1,10 @@
+import json
 import logging
+from typing import Any
 
 import aiohttp
+
+from bot.prompts import SPAM_CLASSIFICATION_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -54,3 +58,48 @@ class OllamaClient:
 
     async def summarize(self, prompt: str) -> str | None:
         return await self._generate(prompt=prompt)
+
+    async def classify_message_for_spam(
+        self,
+        *,
+        system_prompt: str,
+        message_text: str,
+    ) -> dict[str, Any] | None:
+        prompt = SPAM_CLASSIFICATION_PROMPT_TEMPLATE.format(
+            system_prompt=system_prompt,
+            message_text=message_text,
+        )
+        response = await self._generate(prompt=prompt, system=system_prompt)
+        if not response:
+            return None
+
+        try:
+            payload = json.loads(response)
+        except json.JSONDecodeError:
+            logger.warning("Spam classification returned non-JSON response: %r", response)
+            return None
+
+        if not isinstance(payload, dict):
+            logger.warning("Spam classification returned non-object JSON: %r", payload)
+            return None
+
+        classification = payload.get("classification")
+        confidence = payload.get("confidence")
+        reason = payload.get("reason")
+        should_warn = payload.get("should_warn")
+
+        if classification not in {"CLEAN", "SUSPICIOUS", "SPAM"}:
+            return None
+        if not isinstance(confidence, (int, float)):
+            return None
+        if not isinstance(reason, str):
+            return None
+        if not isinstance(should_warn, bool):
+            return None
+
+        return {
+            "classification": classification,
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "reason": reason.strip(),
+            "should_warn": should_warn,
+        }
