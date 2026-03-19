@@ -14,6 +14,8 @@ Production-oriented Telegram bot for **group chats only**. It stores all group m
 - Summarization when context is large (>30 messages)
 - Anti-spam per-group cooldown
 - Graceful error handling when Ollama or DB has issues
+- Tracks the first 5 messages from newly joined users for moderation review
+- Deletes high-confidence spam from tracked new users and escalates mutes from 24 hours to 30 days
 
 ## Project Structure
 

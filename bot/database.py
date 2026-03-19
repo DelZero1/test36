@@ -43,10 +43,14 @@ class Database:
                     joined_at INTEGER,
                     messages_count INTEGER DEFAULT 0,
                     spam_flags INTEGER DEFAULT 0,
+                    warnings_count INTEGER DEFAULT 0,
+                    last_action_at INTEGER,
+                    last_mute_until INTEGER,
                     PRIMARY KEY (user_id, chat_id)
                 )
                 """
             )
+            self._ensure_new_users_columns(conn)
             self._ensure_new_user_messages_table(conn)
             conn.execute(
                 """
@@ -73,6 +77,19 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_message_classification_chat_user ON message_classification(chat_id, user_id)"
             )
             conn.commit()
+
+    def _ensure_new_users_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(new_users)").fetchall()
+        }
+        required_columns = {
+            "warnings_count": "ALTER TABLE new_users ADD COLUMN warnings_count INTEGER DEFAULT 0",
+            "last_action_at": "ALTER TABLE new_users ADD COLUMN last_action_at INTEGER",
+            "last_mute_until": "ALTER TABLE new_users ADD COLUMN last_mute_until INTEGER",
+        }
+        for column_name, statement in required_columns.items():
+            if column_name not in columns:
+                conn.execute(statement)
 
     def _ensure_new_user_messages_table(self, conn: sqlite3.Connection) -> None:
         table_exists = conn.execute(
@@ -173,8 +190,17 @@ class Database:
             with self._connect() as conn:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO new_users (user_id, chat_id, joined_at, messages_count, spam_flags)
-                    VALUES (?, ?, ?, 0, 0)
+                    INSERT OR IGNORE INTO new_users (
+                        user_id,
+                        chat_id,
+                        joined_at,
+                        messages_count,
+                        spam_flags,
+                        warnings_count,
+                        last_action_at,
+                        last_mute_until
+                    )
+                    VALUES (?, ?, ?, 0, 0, 0, NULL, NULL)
                     """,
                     (user_id, chat_id, joined_at),
                 )
@@ -229,6 +255,59 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to fetch new-user message count: %s", exc)
             return 0
+
+    async def increment_warning(self, user_id: int, chat_id: int) -> None:
+        await asyncio.to_thread(self._increment_warning_sync, user_id, chat_id, int(time.time()))
+
+    def _increment_warning_sync(self, user_id: int, chat_id: int, action_at: int) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE new_users
+                    SET warnings_count = warnings_count + 1,
+                        spam_flags = spam_flags + 1,
+                        last_action_at = ?
+                    WHERE user_id = ? AND chat_id = ?
+                    """,
+                    (action_at, user_id, chat_id),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to increment warning count: %s", exc)
+
+    async def get_warning_count(self, user_id: int, chat_id: int) -> int:
+        return await asyncio.to_thread(self._get_warning_count_sync, user_id, chat_id)
+
+    def _get_warning_count_sync(self, user_id: int, chat_id: int) -> int:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT warnings_count FROM new_users WHERE user_id = ? AND chat_id = ?",
+                    (user_id, chat_id),
+                ).fetchone()
+            return int(row["warnings_count"]) if row is not None else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to fetch warning count: %s", exc)
+            return 0
+
+    async def update_last_mute_until(self, user_id: int, chat_id: int, mute_until: int) -> None:
+        await asyncio.to_thread(self._update_last_mute_until_sync, user_id, chat_id, mute_until)
+
+    def _update_last_mute_until_sync(self, user_id: int, chat_id: int, mute_until: int) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE new_users
+                    SET last_mute_until = ?
+                    WHERE user_id = ? AND chat_id = ?
+                    """,
+                    (mute_until, user_id, chat_id),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to update mute expiration: %s", exc)
 
     async def track_new_user(self, *, user_id: int, chat_id: int, joined_at: int) -> None:
         await asyncio.to_thread(self._add_new_user_sync, user_id, chat_id, joined_at)
