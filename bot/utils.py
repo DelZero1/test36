@@ -1,6 +1,8 @@
 import re
 from datetime import datetime, timezone
 
+from aiogram.types import User
+
 URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?", re.IGNORECASE)
 HANDLE_PATTERN = re.compile(r"(?<!\w)@(?:[a-z0-9_]{3,})", re.IGNORECASE)
 
@@ -96,6 +98,24 @@ def utc_now_iso() -> str:
 def safe_message_text(text: str | None, caption: str | None) -> str:
     value = text or caption or ""
     return value.strip()
+
+
+def normalize_username(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lstrip("@").lower()
+    return normalized or None
+
+
+def format_user_label(user: User | None) -> str:
+    if user is None:
+        return "unknown user"
+    if user.username:
+        return f"@{user.username}"
+    full_name = user.full_name.strip()
+    if full_name:
+        return full_name
+    return f"user {user.id}"
 
 
 def should_prefilter_classify_message(text: str) -> bool:

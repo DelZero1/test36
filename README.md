@@ -15,7 +15,18 @@ Production-oriented Telegram bot for **group chats only**. It stores all group m
 - Anti-spam per-group cooldown
 - Graceful error handling when Ollama or DB has issues
 - Tracks the first 5 messages from newly joined users for moderation review
-- Deletes high-confidence spam from tracked new users and escalates mutes from 24 hours to 30 days
+- Deletes high-confidence spam from tracked new users
+- Uses different automatic moderation per chat type:
+  - normal groups: delete + English warning
+  - supergroups: delete + English warning + escalating mute (24 hours, then 30 days)
+- Supports admin reply labeling with `/spam` for missed spam examples
+- Supports manual admin moderation commands addressed to the bot:
+  - `@bot_username mute`
+  - `@bot_username unmute`
+  - `@bot_username kick`
+  - `@bot_username mute @username`
+  - `@bot_username unmute @username`
+- Logs moderation actions and admin spam labels to SQLite for later review/export
 
 ## Project Structure
 
@@ -69,3 +80,9 @@ Production-oriented Telegram bot for **group chats only**. It stores all group m
 - `SQLITE_PATH` (default: `bot_memory.db`)
 - `MAX_RESPONSE_CHARS` (default: `2000`)
 - `LOG_LEVEL` (default: `INFO`)
+
+## Moderation Notes
+
+- Automatic spam enforcement only applies to tracked new users during their first 5 messages.
+- Manual mute defaults to 1 hour and is available only in supergroups.
+- Username-based manual moderation resolves targets from recently stored group messages in SQLite; the bot does not guess identities.
