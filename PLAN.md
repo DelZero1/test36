@@ -25,15 +25,17 @@
 - [x] Preserve audit trail in SQLite
 
 ## Milestone 4 — Admin Feedback Loop
-- [ ] Allow admin to reply to a message and mark it as spam
-- [ ] Store labeled examples in DB
+- [x] Allow admin to reply to a message and mark it as spam
+- [x] Store labeled examples in DB
 - [ ] Add exportable dataset format for future tuning/training
 
 ## Milestone 5 — Safety and Quality
 - [x] Confidence thresholds
 - [ ] whitelist for admins/trusted users
 - [x] anti-false-positive safeguards
-- [ ] logging for moderation decisions
+- [x] logging for moderation decisions
+- [x] Different moderation behavior for groups vs supergroups
+- [x] Manual admin mute/unmute/kick commands
 
 ## Milestone 6 — Optional Future Work
 - [ ] spontaneous group interjections

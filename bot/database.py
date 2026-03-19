@@ -68,13 +68,53 @@ class Database:
                 """
             )
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_spam_labels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    target_user_id INTEGER,
+                    target_username TEXT,
+                    labeled_by_admin_id INTEGER,
+                    message_text TEXT,
+                    label TEXT,
+                    created_at INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS moderation_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    target_user_id INTEGER,
+                    target_username TEXT,
+                    actor_user_id INTEGER,
+                    actor_username TEXT,
+                    action TEXT,
+                    reason TEXT,
+                    duration_seconds INTEGER,
+                    source TEXT,
+                    created_at INTEGER
+                )
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_group_id_id ON messages(group_id, id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_group_username ON messages(group_id, username)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_new_user_messages_chat_user ON new_user_messages(chat_id, user_id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_message_classification_chat_user ON message_classification(chat_id, user_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_admin_spam_labels_chat_created ON admin_spam_labels(chat_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_moderation_actions_chat_created ON moderation_actions(chat_id, created_at)"
             )
             conn.commit()
 
@@ -417,3 +457,187 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to fetch recent messages: %s", exc)
             return []
+
+    async def save_admin_spam_label(
+        self,
+        *,
+        chat_id: int,
+        target_user_id: int | None,
+        target_username: str | None,
+        labeled_by_admin_id: int,
+        message_text: str,
+        label: str = "SPAM",
+        created_at: int | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self._save_admin_spam_label_sync,
+            chat_id,
+            target_user_id,
+            target_username,
+            labeled_by_admin_id,
+            message_text,
+            label,
+            created_at or int(time.time()),
+        )
+
+    def _save_admin_spam_label_sync(
+        self,
+        chat_id: int,
+        target_user_id: int | None,
+        target_username: str | None,
+        labeled_by_admin_id: int,
+        message_text: str,
+        label: str,
+        created_at: int,
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO admin_spam_labels (
+                        chat_id,
+                        target_user_id,
+                        target_username,
+                        labeled_by_admin_id,
+                        message_text,
+                        label,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chat_id,
+                        target_user_id,
+                        target_username,
+                        labeled_by_admin_id,
+                        message_text,
+                        label,
+                        created_at,
+                    ),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to save admin spam label: %s", exc)
+
+    async def get_admin_spam_labels(self, limit: int = 100) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._get_admin_spam_labels_sync, limit)
+
+    def _get_admin_spam_labels_sync(self, limit: int) -> list[dict[str, Any]]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, chat_id, target_user_id, target_username, labeled_by_admin_id, message_text, label, created_at
+                    FROM admin_spam_labels
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to fetch admin spam labels: %s", exc)
+            return []
+
+    async def log_moderation_action(
+        self,
+        *,
+        chat_id: int,
+        target_user_id: int | None,
+        target_username: str | None,
+        actor_user_id: int | None,
+        actor_username: str | None,
+        action: str,
+        reason: str,
+        duration_seconds: int | None,
+        source: str,
+        created_at: int | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self._log_moderation_action_sync,
+            chat_id,
+            target_user_id,
+            target_username,
+            actor_user_id,
+            actor_username,
+            action,
+            reason,
+            duration_seconds,
+            source,
+            created_at or int(time.time()),
+        )
+
+    def _log_moderation_action_sync(
+        self,
+        chat_id: int,
+        target_user_id: int | None,
+        target_username: str | None,
+        actor_user_id: int | None,
+        actor_username: str | None,
+        action: str,
+        reason: str,
+        duration_seconds: int | None,
+        source: str,
+        created_at: int,
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO moderation_actions (
+                        chat_id,
+                        target_user_id,
+                        target_username,
+                        actor_user_id,
+                        actor_username,
+                        action,
+                        reason,
+                        duration_seconds,
+                        source,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chat_id,
+                        target_user_id,
+                        target_username,
+                        actor_user_id,
+                        actor_username,
+                        action,
+                        reason,
+                        duration_seconds,
+                        source,
+                        created_at,
+                    ),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to log moderation action: %s", exc)
+
+    async def resolve_user_by_username(self, chat_id: int, username: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._resolve_user_by_username_sync, chat_id, username)
+
+    def _resolve_user_by_username_sync(self, chat_id: int, username: str) -> dict[str, Any] | None:
+        normalized = username.lstrip("@").strip().lower()
+        if not normalized:
+            return None
+
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT user_id, username, is_bot
+                    FROM messages
+                    WHERE group_id = ?
+                      AND user_id IS NOT NULL
+                      AND lower(username) = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (chat_id, normalized),
+                ).fetchone()
+            return dict(row) if row is not None else None
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to resolve username %s in chat %s: %s", username, chat_id, exc)
+            return None
