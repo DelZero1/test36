@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,18 +47,7 @@ class Database:
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS new_user_messages (
-                    user_id INTEGER NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    message_id INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    PRIMARY KEY (user_id, chat_id, message_id)
-                )
-                """
-            )
+            self._ensure_new_user_messages_table(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_group_id_id ON messages(group_id, id)"
             )
@@ -65,6 +55,52 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_new_user_messages_chat_user ON new_user_messages(chat_id, user_id)"
             )
             conn.commit()
+
+    def _ensure_new_user_messages_table(self, conn: sqlite3.Connection) -> None:
+        table_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'new_user_messages'"
+        ).fetchone()
+        expected_columns = {"id", "user_id", "chat_id", "message_text", "created_at"}
+
+        if table_exists is None:
+            self._create_new_user_messages_table(conn)
+            return
+
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(new_user_messages)").fetchall()
+        }
+        if columns == expected_columns:
+            return
+
+        legacy_table_name = "new_user_messages_legacy"
+        conn.execute(f"DROP TABLE IF EXISTS {legacy_table_name}")
+        conn.execute(f"ALTER TABLE new_user_messages RENAME TO {legacy_table_name}")
+        self._create_new_user_messages_table(conn)
+
+        source_message_column = "message_text" if "message_text" in columns else "text" if "text" in columns else None
+        source_created_column = "created_at" if "created_at" in columns else "timestamp" if "timestamp" in columns else None
+
+        if {"user_id", "chat_id"}.issubset(columns) and source_message_column and source_created_column:
+            conn.execute(
+                f"""
+                INSERT INTO new_user_messages (user_id, chat_id, message_text, created_at)
+                SELECT user_id, chat_id, {source_message_column}, {source_created_column}
+                FROM {legacy_table_name}
+                """
+            )
+
+    def _create_new_user_messages_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS new_user_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                chat_id INTEGER,
+                message_text TEXT,
+                created_at INTEGER
+            )
+            """
+        )
 
     async def save_message(
         self,
@@ -111,94 +147,103 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to save message: %s", exc)
 
-    async def track_new_user(self, *, user_id: int, chat_id: int, joined_at: int) -> None:
-        await asyncio.to_thread(self._track_new_user_sync, user_id, chat_id, joined_at)
+    async def add_new_user(self, user_id: int, chat_id: int) -> None:
+        await asyncio.to_thread(self._add_new_user_sync, user_id, chat_id, int(time.time()))
 
-    def _track_new_user_sync(self, user_id: int, chat_id: int, joined_at: int) -> None:
+    def _add_new_user_sync(self, user_id: int, chat_id: int, joined_at: int) -> None:
         try:
             with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "DELETE FROM new_user_messages WHERE user_id = ? AND chat_id = ?",
-                    (user_id, chat_id),
-                )
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO new_users (user_id, chat_id, joined_at, messages_count, spam_flags)
+                    INSERT OR IGNORE INTO new_users (user_id, chat_id, joined_at, messages_count, spam_flags)
                     VALUES (?, ?, ?, 0, 0)
                     """,
                     (user_id, chat_id, joined_at),
                 )
                 conn.commit()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to track new user: %s", exc)
+            logger.exception("Failed to add new user: %s", exc)
+
+    async def is_new_user(self, user_id: int, chat_id: int) -> bool:
+        return await asyncio.to_thread(self._is_new_user_sync, user_id, chat_id)
+
+    def _is_new_user_sync(self, user_id: int, chat_id: int) -> bool:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM new_users WHERE user_id = ? AND chat_id = ?",
+                    (user_id, chat_id),
+                ).fetchone()
+            return row is not None
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to check tracked new user: %s", exc)
+            return False
+
+    async def increment_message_count(self, user_id: int, chat_id: int) -> None:
+        await asyncio.to_thread(self._increment_message_count_sync, user_id, chat_id)
+
+    def _increment_message_count_sync(self, user_id: int, chat_id: int) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE new_users
+                    SET messages_count = messages_count + 1
+                    WHERE user_id = ? AND chat_id = ?
+                    """,
+                    (user_id, chat_id),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to increment new-user message count: %s", exc)
+
+    async def get_message_count(self, user_id: int, chat_id: int) -> int:
+        return await asyncio.to_thread(self._get_message_count_sync, user_id, chat_id)
+
+    def _get_message_count_sync(self, user_id: int, chat_id: int) -> int:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT messages_count FROM new_users WHERE user_id = ? AND chat_id = ?",
+                    (user_id, chat_id),
+                ).fetchone()
+            return int(row["messages_count"]) if row is not None else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to fetch new-user message count: %s", exc)
+            return 0
+
+    async def track_new_user(self, *, user_id: int, chat_id: int, joined_at: int) -> None:
+        await asyncio.to_thread(self._add_new_user_sync, user_id, chat_id, joined_at)
 
     async def save_new_user_message(
         self,
         *,
         user_id: int,
         chat_id: int,
-        message_id: int,
         text: str,
-        timestamp: str,
-        min_joined_at: int,
-    ) -> bool:
-        return await asyncio.to_thread(
-            self._save_new_user_message_sync,
-            user_id,
-            chat_id,
-            message_id,
-            text,
-            timestamp,
-            min_joined_at,
-        )
+        created_at: int,
+    ) -> None:
+        await asyncio.to_thread(self._save_new_user_message_sync, user_id, chat_id, text, created_at)
 
     def _save_new_user_message_sync(
         self,
         user_id: int,
         chat_id: int,
-        message_id: int,
         text: str,
-        timestamp: str,
-        min_joined_at: int,
-    ) -> bool:
+        created_at: int,
+    ) -> None:
         try:
             with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    """
-                    SELECT messages_count
-                    FROM new_users
-                    WHERE user_id = ? AND chat_id = ? AND joined_at >= ?
-                    """,
-                    (user_id, chat_id, min_joined_at),
-                ).fetchone()
-                if row is None or row["messages_count"] >= 3:
-                    return False
-
-                cursor = conn.execute(
-                    """
-                    INSERT OR IGNORE INTO new_user_messages (user_id, chat_id, message_id, text, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (user_id, chat_id, message_id, text, timestamp),
-                )
-                if cursor.rowcount == 0:
-                    return False
-
                 conn.execute(
                     """
-                    UPDATE new_users
-                    SET messages_count = messages_count + 1
-                    WHERE user_id = ? AND chat_id = ? AND joined_at >= ?
+                    INSERT INTO new_user_messages (user_id, chat_id, message_text, created_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (user_id, chat_id, min_joined_at),
+                    (user_id, chat_id, text, created_at),
                 )
                 conn.commit()
-                return True
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to save tracked new-user message: %s", exc)
-            return False
 
     async def get_recent_messages(self, group_id: int, limit: int) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._get_recent_messages_sync, group_id, limit)
