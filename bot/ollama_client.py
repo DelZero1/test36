@@ -65,10 +65,15 @@ class OllamaClient:
         system_prompt: str,
         message_text: str,
     ) -> dict[str, Any] | None:
-        prompt = SPAM_CLASSIFICATION_PROMPT_TEMPLATE.format(
-            system_prompt=system_prompt,
-            message_text=message_text,
-        )
+        try:
+            prompt = SPAM_CLASSIFICATION_PROMPT_TEMPLATE.format(
+                system_prompt=system_prompt,
+                message_text=message_text,
+            )
+        except Exception:
+            logger.exception("Failed to build spam classification prompt")
+            return None
+
         response = await self._generate(prompt=prompt, system=system_prompt)
         if not response:
             return None

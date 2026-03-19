@@ -26,6 +26,7 @@ The bot currently:
 - model name mismatch issue identified and corrected through `.env`
 - completed the missing new-user moderation plumbing in the database and handlers so tracked joins are inserted once and only the first 3 messages are stored for later review
 - added the first moderation phase: deterministic pre-filtering, Ollama JSON spam classification, audit storage, and short warning replies for strong BC2-off-topic promo/spam signals
+- fixed the spam classification prompt template so literal JSON braces are escaped for Python `.format()`, and added defensive logging/early return if prompt building ever fails again
 
 ## Known Limitations
 - bot does not yet mute, restrict, or ban users automatically
@@ -35,7 +36,7 @@ The bot currently:
 - current bot behavior is mainly triggered-response based
 
 ## Last Completed Task
-Completed Task 3 by adding BC2-aware moderation for tracked new users: a lightweight deterministic pre-filter decides which of the first 3 messages need review, Ollama returns strict JSON classifications (`CLEAN` / `SUSPICIOUS` / `SPAM`), those decisions are stored in SQLite, and the bot posts a short warning when a message is confidently spam-like.
+Patched the moderation prompt-formatting crash: the spam classification JSON example now escapes literal braces correctly for Python `.format()`, and the Ollama client logs and safely returns `None` if prompt construction fails.
 
 ## Next Planned Task
 Continue the new-user moderation pipeline:
