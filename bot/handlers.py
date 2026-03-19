@@ -14,7 +14,7 @@ from bot.memory import build_raw_context
 from bot.ollama_client import OllamaClient
 from bot.prompts import SUMMARIZATION_PROMPT_TEMPLATE, SYSTEM_PROMPT
 from bot.triggers import should_respond
-from bot.utils import safe_message_text, utc_now_iso
+from bot.utils import build_warning_message, safe_message_text, should_prefilter_classify_message, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ TRACKED_JOIN_STATUSES = {
     ChatMemberStatus.RESTRICTED,
 }
 LEFT_MEMBER_STATUSES = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
+WARN_CONFIDENCE_THRESHOLD = 0.70
 
 
 def register_handlers(
@@ -58,7 +59,7 @@ def register_handlers(
         if not summary:
             return recent_text
 
-        return f"Summary of earlier messages:\n{summary}\n\nMost recent messages:\n{recent_text}"
+        return "Summary of earlier messages:\n" f"{summary}\n\nMost recent messages:\n{recent_text}"
 
     def is_cooldown_active(group_id: int) -> bool:
         now = time.monotonic()
@@ -67,6 +68,59 @@ def register_handlers(
             return True
         group_cooldowns[group_id] = now + settings.response_cooldown_seconds
         return False
+
+    async def maybe_classify_new_user_message(message: Message, text: str) -> None:
+        if not message.from_user or message.from_user.is_bot:
+            return
+
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        if not await db.is_new_user(user_id, chat_id):
+            return
+
+        await db.increment_message_count(user_id, chat_id)
+        current_count = await db.get_message_count(user_id, chat_id)
+        if current_count > 3:
+            return
+
+        await db.save_new_user_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            text=text,
+            created_at=int(time.time()),
+        )
+
+        if not should_prefilter_classify_message(text):
+            return
+
+        classification_result = await ollama_client.classify_message_for_spam(
+            system_prompt=SYSTEM_PROMPT,
+            message_text=text,
+        )
+        if not classification_result:
+            return
+
+        await db.save_classification(
+            user_id=user_id,
+            chat_id=chat_id,
+            text=text,
+            classification=classification_result["classification"],
+            confidence=classification_result["confidence"],
+            reason=classification_result["reason"],
+            should_warn=classification_result["should_warn"],
+        )
+
+        confidence = classification_result["confidence"]
+        wants_warn = classification_result["should_warn"]
+        is_strong_spam = classification_result["classification"] == "SPAM" and confidence >= WARN_CONFIDENCE_THRESHOLD
+        if confidence < WARN_CONFIDENCE_THRESHOLD or not (wants_warn or is_strong_spam):
+            return
+
+        warning_text = build_warning_message(
+            classification_result["reason"],
+            classification_result["classification"],
+        )
+        await message.reply(warning_text)
 
     async def handle_incoming(message: Message) -> None:
         if message.chat.type not in {"group", "supergroup"}:
@@ -89,20 +143,7 @@ def register_handlers(
             timestamp=timestamp,
             is_bot=bool(message.from_user and message.from_user.is_bot),
         )
-
-        if message.from_user and not message.from_user.is_bot:
-            user_id = message.from_user.id
-            chat_id = message.chat.id
-            if await db.is_new_user(user_id, chat_id):
-                await db.increment_message_count(user_id, chat_id)
-                current_count = await db.get_message_count(user_id, chat_id)
-                if current_count <= 3:
-                    await db.save_new_user_message(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        text=text,
-                        created_at=int(time.time()),
-                    )
+        await maybe_classify_new_user_message(message, text)
 
         me = await get_me()
         if message.from_user and message.from_user.id == me.id:
