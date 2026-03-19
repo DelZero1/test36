@@ -4,8 +4,9 @@ from collections import defaultdict
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command
-from aiogram.types import Message, User
+from aiogram.types import ChatMemberUpdated, Message, User
 
 from bot.config import Settings
 from bot.database import Database
@@ -17,6 +18,14 @@ from bot.utils import safe_message_text, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
+JOINED_MEMBER_STATUSES = {
+    ChatMemberStatus.MEMBER,
+    ChatMemberStatus.ADMINISTRATOR,
+    ChatMemberStatus.CREATOR,
+    ChatMemberStatus.RESTRICTED,
+}
+LEFT_MEMBER_STATUSES = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
+
 
 def register_handlers(
     dp: Dispatcher,
@@ -25,6 +34,7 @@ def register_handlers(
     ollama_client: OllamaClient,
     settings: Settings,
 ) -> None:
+    bot_started_at = int(time.time())
     group_cooldowns: dict[int, float] = defaultdict(lambda: 0.0)
     me_cache: User | None = None
 
@@ -71,6 +81,7 @@ def register_handlers(
 
         username = message.from_user.username if message.from_user else None
         display_name = username or (message.from_user.full_name if message.from_user else "unknown-user")
+        timestamp = utc_now_iso()
 
         await db.save_message(
             group_id=message.chat.id,
@@ -78,9 +89,19 @@ def register_handlers(
             user_id=message.from_user.id if message.from_user else None,
             username=display_name,
             text=text,
-            timestamp=utc_now_iso(),
+            timestamp=timestamp,
             is_bot=bool(message.from_user and message.from_user.is_bot),
         )
+
+        if message.from_user and not message.from_user.is_bot:
+            await db.save_new_user_message(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                text=text,
+                timestamp=timestamp,
+                min_joined_at=bot_started_at,
+            )
 
         me = await get_me()
         if message.from_user and message.from_user.id == me.id:
@@ -119,6 +140,24 @@ def register_handlers(
             text=trimmed,
             timestamp=utc_now_iso(),
             is_bot=True,
+        )
+
+    @dp.chat_member(F.chat.type.in_({"group", "supergroup"}))
+    async def track_joined_user(event: ChatMemberUpdated) -> None:
+        old_status = event.old_chat_member.status
+        new_status = event.new_chat_member.status
+        joined_user = event.new_chat_member.user
+
+        if joined_user.is_bot:
+            return
+
+        if old_status not in LEFT_MEMBER_STATUSES or new_status not in JOINED_MEMBER_STATUSES:
+            return
+
+        await db.track_new_user(
+            user_id=joined_user.id,
+            chat_id=event.chat.id,
+            joined_at=int(time.time()),
         )
 
     @dp.message(Command("ask"), F.chat.type.in_({"group", "supergroup"}))
