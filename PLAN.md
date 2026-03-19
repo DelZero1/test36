@@ -17,12 +17,11 @@
 
 ## Milestone 3 — Moderation System for New Users
 - [x] Track only users who joined after bot startup
-- [x] Record first 3 messages per tracked new user
+- [x] Record first 5 messages per tracked new user
 - [x] Run spam/promo classification on those messages
-- [ ] Escalation rules:
-  - [x] 1 spam-like message -> warn
-  - [ ] 2 spam-like messages -> mute 24h
-  - [ ] 3 spam-like messages -> mute 30d
+- [x] Escalation rules:
+  - [x] 1 spam-like message -> warn + mute 24h
+  - [x] repeated spam-like message -> mute 30d
 - [x] Preserve audit trail in SQLite
 
 ## Milestone 4 — Admin Feedback Loop

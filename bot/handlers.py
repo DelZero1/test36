@@ -6,15 +6,21 @@ from typing import Any
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command
-from aiogram.types import ChatMemberUpdated, Message, User
+from aiogram.types import ChatMemberUpdated, ChatPermissions, Message, User
 
 from bot.config import Settings
 from bot.database import Database
 from bot.memory import build_raw_context
 from bot.ollama_client import OllamaClient
 from bot.prompts import SUMMARIZATION_PROMPT_TEMPLATE, SYSTEM_PROMPT
-from bot.triggers import should_respond
-from bot.utils import build_warning_message, safe_message_text, should_prefilter_classify_message, utc_now_iso
+from bot.triggers import (
+    build_escalation_warning,
+    get_mute_seconds_for_warning_count,
+    should_apply_spam_penalty,
+    should_classify_tracked_message,
+    should_respond,
+)
+from bot.utils import safe_message_text, should_prefilter_classify_message, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +29,7 @@ TRACKED_JOIN_STATUSES = {
     ChatMemberStatus.RESTRICTED,
 }
 LEFT_MEMBER_STATUSES = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
-WARN_CONFIDENCE_THRESHOLD = 0.70
+MODERATION_EXEMPT_STATUSES = {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
 
 
 def register_handlers(
@@ -69,19 +75,109 @@ def register_handlers(
         group_cooldowns[group_id] = now + settings.response_cooldown_seconds
         return False
 
-    async def maybe_classify_new_user_message(message: Message, text: str) -> None:
-        if not message.from_user or message.from_user.is_bot:
+    def build_target_username(user: User) -> str:
+        if user.username:
+            return f"@{user.username}"
+        full_name = user.full_name.strip()
+        if full_name:
+            return full_name
+        return f"user {user.id}"
+
+    async def delete_message_safe(message: Message) -> None:
+        try:
+            await message.delete()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to delete spam message %s in chat %s: %s",
+                message.message_id,
+                message.chat.id,
+                exc,
+            )
+
+    async def mute_user(chat_id: int, user_id: int, seconds: int) -> int | None:
+        mute_until = int(time.time()) + seconds
+        try:
+            await bot.restrict_chat_member(
+                chat_id,
+                user_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=mute_until,
+            )
+            return mute_until
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to mute user %s in chat %s for %s seconds: %s",
+                user_id,
+                chat_id,
+                seconds,
+                exc,
+            )
+            return None
+
+    async def is_moderation_exempt(message: Message) -> bool:
+        if not message.from_user:
+            return True
+
+        if message.from_user.is_bot:
+            return True
+
+        try:
+            member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to fetch member status for user %s in chat %s: %s",
+                message.from_user.id,
+                message.chat.id,
+                exc,
+            )
+            return True
+
+        return member.status in MODERATION_EXEMPT_STATUSES
+
+    async def maybe_enforce_spam_penalty(message: Message, classification_result: dict[str, Any]) -> None:
+        if not message.from_user:
             return
+
+        if await is_moderation_exempt(message):
+            return
+
+        prior_warnings = await db.get_warning_count(message.from_user.id, message.chat.id)
+        mute_seconds = get_mute_seconds_for_warning_count(prior_warnings)
+        warning_text = build_escalation_warning(
+            build_target_username(message.from_user),
+            classification_result["reason"],
+            prior_warnings,
+        )
+
+        await db.increment_warning(message.from_user.id, message.chat.id)
+        await delete_message_safe(message)
+        mute_until = await mute_user(message.chat.id, message.from_user.id, mute_seconds)
+        if mute_until is not None:
+            await db.update_last_mute_until(message.from_user.id, message.chat.id, mute_until)
+
+        try:
+            await bot.send_message(message.chat.id, warning_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to send moderation warning for user %s in chat %s: %s",
+                message.from_user.id,
+                message.chat.id,
+                exc,
+            )
+
+    async def maybe_classify_new_user_message(message: Message, text: str) -> bool:
+        if not message.from_user or message.from_user.is_bot:
+            return False
 
         user_id = message.from_user.id
         chat_id = message.chat.id
         if not await db.is_new_user(user_id, chat_id):
-            return
+            return False
 
         await db.increment_message_count(user_id, chat_id)
         current_count = await db.get_message_count(user_id, chat_id)
-        if current_count > 3:
-            return
+        if not should_classify_tracked_message(current_count):
+            return False
 
         await db.save_new_user_message(
             user_id=user_id,
@@ -91,14 +187,14 @@ def register_handlers(
         )
 
         if not should_prefilter_classify_message(text):
-            return
+            return False
 
         classification_result = await ollama_client.classify_message_for_spam(
             system_prompt=SYSTEM_PROMPT,
             message_text=text,
         )
         if not classification_result:
-            return
+            return False
 
         await db.save_classification(
             user_id=user_id,
@@ -110,17 +206,14 @@ def register_handlers(
             should_warn=classification_result["should_warn"],
         )
 
-        confidence = classification_result["confidence"]
-        wants_warn = classification_result["should_warn"]
-        is_strong_spam = classification_result["classification"] == "SPAM" and confidence >= WARN_CONFIDENCE_THRESHOLD
-        if confidence < WARN_CONFIDENCE_THRESHOLD or not (wants_warn or is_strong_spam):
-            return
+        if not should_apply_spam_penalty(
+            classification_result.get("classification"),
+            classification_result.get("confidence"),
+        ):
+            return False
 
-        warning_text = build_warning_message(
-            classification_result["reason"],
-            classification_result["classification"],
-        )
-        await message.reply(warning_text)
+        await maybe_enforce_spam_penalty(message, classification_result)
+        return True
 
     async def handle_incoming(message: Message) -> None:
         if message.chat.type not in {"group", "supergroup"}:
@@ -143,7 +236,9 @@ def register_handlers(
             timestamp=timestamp,
             is_bot=bool(message.from_user and message.from_user.is_bot),
         )
-        await maybe_classify_new_user_message(message, text)
+        moderation_action_taken = await maybe_classify_new_user_message(message, text)
+        if moderation_action_taken:
+            return
 
         me = await get_me()
         if message.from_user and message.from_user.id == me.id:
