@@ -21,6 +21,7 @@ The bot currently:
 - Windows event loop compatibility fix added
 - Ollama client lifecycle improved (`start()` / `close()`)
 - model name mismatch issue identified and corrected through `.env`
+- completed the missing new-user moderation plumbing in the database and handlers so tracked joins are inserted once and only the first 3 messages are stored for later review
 
 ## Known Limitations
 - bot does not yet perform autonomous moderation
@@ -30,7 +31,7 @@ The bot currently:
 - current bot behavior is mainly triggered-response based
 
 ## Last Completed Task
-Implemented the first moderation data-capture step: track users who join after startup and store their first 3 text messages for later review/classification.
+Completed the previously incomplete moderation data-capture step by fixing the required `new_users` database helpers, aligning `new_user_messages` storage with the intended schema, and wiring join/message tracking into the handlers without changing the existing reply flow.
 
 ## Next Planned Task
 Continue the new-user moderation pipeline:

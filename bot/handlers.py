@@ -18,10 +18,8 @@ from bot.utils import safe_message_text, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-JOINED_MEMBER_STATUSES = {
+TRACKED_JOIN_STATUSES = {
     ChatMemberStatus.MEMBER,
-    ChatMemberStatus.ADMINISTRATOR,
-    ChatMemberStatus.CREATOR,
     ChatMemberStatus.RESTRICTED,
 }
 LEFT_MEMBER_STATUSES = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
@@ -34,7 +32,6 @@ def register_handlers(
     ollama_client: OllamaClient,
     settings: Settings,
 ) -> None:
-    bot_started_at = int(time.time())
     group_cooldowns: dict[int, float] = defaultdict(lambda: 0.0)
     me_cache: User | None = None
 
@@ -94,14 +91,18 @@ def register_handlers(
         )
 
         if message.from_user and not message.from_user.is_bot:
-            await db.save_new_user_message(
-                user_id=message.from_user.id,
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                text=text,
-                timestamp=timestamp,
-                min_joined_at=bot_started_at,
-            )
+            user_id = message.from_user.id
+            chat_id = message.chat.id
+            if await db.is_new_user(user_id, chat_id):
+                await db.increment_message_count(user_id, chat_id)
+                current_count = await db.get_message_count(user_id, chat_id)
+                if current_count <= 3:
+                    await db.save_new_user_message(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        text=text,
+                        created_at=int(time.time()),
+                    )
 
         me = await get_me()
         if message.from_user and message.from_user.id == me.id:
@@ -148,17 +149,13 @@ def register_handlers(
         new_status = event.new_chat_member.status
         joined_user = event.new_chat_member.user
 
-        if joined_user.is_bot:
+        if event.chat.type == "private" or joined_user.is_bot:
             return
 
-        if old_status not in LEFT_MEMBER_STATUSES or new_status not in JOINED_MEMBER_STATUSES:
+        if new_status not in TRACKED_JOIN_STATUSES or old_status not in LEFT_MEMBER_STATUSES:
             return
 
-        await db.track_new_user(
-            user_id=joined_user.id,
-            chat_id=event.chat.id,
-            joined_at=int(time.time()),
-        )
+        await db.add_new_user(joined_user.id, event.chat.id)
 
     @dp.message(Command("ask"), F.chat.type.in_({"group", "supergroup"}))
     async def ask_command(message: Message) -> None:
