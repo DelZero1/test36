@@ -16,8 +16,8 @@
   - summarization
 
 ## Milestone 3 — Moderation System for New Users
-- [ ] Track only users who joined after bot startup
-- [ ] Record first 3 messages per tracked new user
+- [x] Track only users who joined after bot startup
+- [x] Record first 3 messages per tracked new user
 - [ ] Run spam/promo classification on those messages
 - [ ] Escalation rules:
   - 1 spam-like message -> warn

@@ -24,20 +24,19 @@ The bot currently:
 
 ## Known Limitations
 - bot does not yet perform autonomous moderation
-- bot does not yet track new users separately
+- bot tracks only post-start joins and the first 3 text messages; no spam classification actions are applied yet
 - admin reply-based spam labeling is not implemented yet
 - spontaneous human-like interjections are not implemented yet
 - current bot behavior is mainly triggered-response based
 
 ## Last Completed Task
-Stabilized the Telegram + Ollama bot so it starts successfully on Windows and responds through local Ollama with configured model name.
+Implemented the first moderation data-capture step: track users who join after startup and store their first 3 text messages for later review/classification.
 
 ## Next Planned Task
-Design and implement new-user moderation pipeline:
-- track users who join after bot startup
-- analyze first 3 messages
-- classify spam/promo intent
+Continue the new-user moderation pipeline:
+- classify the stored first 3 messages for spam/promo intent
 - escalate warn -> 24h mute -> 30d mute
+- preserve moderation audit data in SQLite
 
 ## Files Known To Be Stable
 - `app.py`
